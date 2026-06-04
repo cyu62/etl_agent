@@ -1,0 +1,26 @@
+customer_id,first_name,last_name,email,phone,date_of_birth,account_type,balance,credit_score,address,city,state,zip,join_date,annual_income,loan_amount,loan_status
+1001,james,wilson,james.wilson@gmail.com,555-304-2918,1985-03-12,checking,4521.33,720.0,123 maple st,chicago,il,60601,2019-06-14,72000.0,15000,active
+1002,sarah,johnson,sarah.j@yahoo.com,(555) 210-3847,03/22/1990,savings,12300.0,685.0,456 oak avenue,chicago,il,60602,06/18/2020,95000.0,0,active
+1003,michael,brown,,5559871234,1978-11-05,checking,320.75,590.0,789 pine rd,chicago,il,60603,2018-02-28,48000.0,25000,active
+1004,emily,davis,emily.davis@hotmail.com,555.478.2910,1992-07-19,savings,,711.0,321 elm street,springfield,il,62701,2021-11-03,110000.0,0,active
+1005,robert,miller,rmiller@gmail.com,+1-555-647-3821,05-15-1983,checking,8750.22,640.0,654 birch blvd,,il,62702,2017-09-22,63000.0,10000,active
+1006,jennifer,taylor,jennifer_taylor@,5552983011,1995-02-28,savings,22100.5,758.0,987 cedar lane,springfield,il,62703,2022-04-17,130000.0,0,active
+1007,david,anderson,david.anderson@gmail.com,555-123-4567,1980-09-30,checking,1200.0,502.0,147 walnut dr,peoria,il,61602,2016-07-11,39000.0,30000,defaulted
+1008,jessica,thomas,jessica.thomas@outlook.com,5554321987,1988-12-14,savings,,693.0,258 spruce ave,peoria,il,61603,2020-01-29,87000.0,5000,active
+1009,william,jackson,william.j@gmail.com,(555)876-5432,1975-04-08,checking,3340.18,,369 willow way,peoria,il,61604,2015-03-05,55000.0,20000,active
+1010,ashley,white,ashley.white@gmail.com,555-765-4321,1997-06-23,savings,50200.75,801.0,741 poplar pl,rockford,il,61101,2023-02-14,175000.0,0,active
+1011,christopher,harris,chris.harris@yahoo.com,5550192837,1982-08-17,savings,6700.0,672.0,,rockford,il,61102,2018-10-30,68000.0,12000,active
+1012,amanda,martin,amanda.martin@,555-081-7263,1993-10-01,checking,-450.0,615.0,852 ash street,rockford,il,61103,2021-06-19,52000.0,8000,active
+1013,matthew,thompson,matthew.t@gmail.com,5554719283,31/01/1987,savings,9100.25,733.0,963 hickory ct,aurora,il,60505,2019-12-02,98000.0,0,active
+1014,stephanie,garcia,stephanie.garcia@outlook.com,(555) 362-8471,1990-05-14,checking,2800.0,588.0,174 magnolia blvd,aurora,il,60506,2020-08-25,44000.0,18000,active
+1015,kevin,martinez,kevin.m@hotmail.com,555.293.8471,1977-01-29,savings,14400.33,709.0,285 sycamore rd,aurora,il,60507,2017-04-13,81000.0,0,closed
+1016,rachel,robinson,rachel.robinson@gmail.com,5558374920,1994-11-07,checking,780.5,,396 chestnut ave,naperville,il,60540,2022-09-08,61000.0,22000,active
+1017,brian,clark,brian.clark@,5551928374,1986-03-25,savings,31500.0,776.0,407 redwood dr,naperville,il,60541,2018-07-16,142000.0,0,active
+1018,megan,rodriguez,megan.r@yahoo.com,555-847-2910,1991-08-12,checking,5600.75,631.0,518 sequoia lane,naperville,il,60542,2021-03-27,57000.0,9000,active
+1019,tyler,lewis,tyler.lewis@gmail.com,(555) 019-2847,1999-02-14,savings,,654.0,629 cypress ct,joliet,il,60432,2023-06-01,43000.0,0,active
+1020,lauren,lee,lauren.lee@outlook.com,5559283741,1983-07-30,checking,9200.0,698.0,730 juniper way,joliet,il,60433,2016-11-20,76000.0,17000,active
+1021,justin,walker,justin.walker@gmail.com,555-192-8473,1996-04-18,savings,2100.25,567.0,841 palm blvd,,il,60434,2022-01-11,38000.0,15000,pending
+1022,brittany,hall,brittany.h@hotmail.com,5550847291,1989-09-03,checking,17800.5,745.0,952 olive st,joliet,il,60435,2019-05-29,105000.0,0,active
+1023,nathan,allen,nathan.allen@,555.748.2019,1981-12-21,savings,4300.0,608.0,163 bamboo ave,elgin,il,60120,2017-08-14,49000.0,28000,defaulted
+1024,samantha,young,samantha.y@gmail.com,(555) 384-7291,1994-06-09,checking,,722.0,274 fir street,elgin,il,60121,2020-11-03,88000.0,6000,active
+1025,aaron,hernandez,aaron.h@yahoo.com,5554829103,1979-10-15,savings,6800.75,661.0,385 maple st,elgin,il,60122,2018-03-22,70000.0,11000,active
