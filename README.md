@@ -74,6 +74,7 @@ etl_pipeline/
 | `validate_email` | Replaces invalid email addresses with empty string |
 | `replace_nan_strings` | Replaces literal "nan" strings with empty string |
 | `flag_negative_balance` | Adds a `balance_flag` column marking negative balance rows |
+| `trim_whitespace` | Strips leading/trailing spaces from string values |
 
 ## Deterministic pre-cleaning (always runs before the agent)
 

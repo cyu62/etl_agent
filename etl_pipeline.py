@@ -1,10 +1,27 @@
 import json
+import logging
 import pandas as pd
-import requests
+from datetime import datetime
 from openai import OpenAI
+import os
 
 MODEL = "qwen2.5:3b"
+MAX_ITERATIONS = 20
+MAX_RETRIES = 3
+
 client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+
+
+os.makedirs("audit", exist_ok=True)
+logging.basicConfig(
+    filename=f"audit/audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+)
+
+def audit(msg):
+    logging.info(msg)
+    print(msg)
 
 # --- Your existing ETL functions (unchanged) ---
 def extract(filepath):
@@ -145,6 +162,10 @@ def flag_negative_balance(df, column):
     df["balance_flag"] = df[column].apply(
         lambda x: "negative_balance" if pd.notna(x) and x < 0 else ""
     )
+    return df
+
+def trim_whitespace(df, column):
+    df[column] = df[column].astype(str).str.strip()
     return df
 
 
@@ -314,6 +335,20 @@ tools = [
     {
         "type": "function",
         "function": {
+            "name": "trim_whitespace",
+            "description": "Strip leading and trailing whitespace from all string values in a column",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string", "description": "Column name"},
+                },
+                "required": ["column"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "finish",
             "description": "Call this when cleaning is complete",
             "parameters": {"type": "object", "properties": {}},
@@ -348,6 +383,8 @@ def run_tool(df, name, tool_input):
             return replace_nan_strings(df), "ok"
         elif name == "flag_negative_balance":
             return flag_negative_balance(df, tool_input["column"]), "ok"
+        elif name == "trim_whitespace":
+            return trim_whitespace(df, tool_input["column"]), "ok"
         else:
             return df, f"Unknown tool: {name}"
     except Exception as e:
@@ -365,42 +402,48 @@ def run_agent(source):
         df = pd.read_csv(source)
 
     profile = get_data_profile(df)
+    audit(f"Starting agent. Dataset shape: {df.shape}")
+
+    system_prompt = (
+        "You are a data cleaning agent. Your job is to analyze a data profile and call tools to clean the data.\n\n"
+        "Follow this process:\n"
+        "1. Review every column in the profile — dtype, null percentage, casing, sample values.\n"
+        "2. For each issue you find, call the appropriate tool to fix it.\n"
+        "3. Work through all columns before calling finish.\n\n"
+        "Rules:\n"
+        "- Always call drop_duplicates and replace_nan_strings at the start.\n"
+        "- Call trim_whitespace on any string column that may have leading/trailing spaces.\n"
+        "- Fill nulls in numeric columns with 'mean' or 'median'. Fill nulls in string columns with 'unknown'.\n"
+        "- Strip currency symbols ('$', ',') or units before converting to a numeric dtype.\n"
+        "- Convert columns that look numeric but have dtype 'object' to float or int.\n"
+        "- Rename columns with spaces or special characters to use underscores.\n"
+        "- If a column name contains 'date' or 'dob', call standardize_date on it.\n"
+        "- If a column name contains 'phone', call standardize_phone on it.\n"
+        "- If a column name contains 'email', call validate_email on it.\n"
+        "- If a column name contains 'balance', call flag_negative_balance on it.\n"
+        "- If a string column has mixed_case: true, call standardize_case with 'lower' to normalize it.\n"
+        "- Only call finish when every column has been reviewed and all issues are resolved."
+    )
+
+    user_prompt = (
+        f"Here is the profile of the dataset:\n{json.dumps(profile, indent=2)}\n\n"
+        "Go through each column, identify issues, and fix them using the available tools. "
+        "State which issue you are fixing and why before each tool call. "
+        "When all columns are clean, call the finish tool."
+    )
 
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a data cleaning agent. Your job is to analyze a data profile and call tools to clean the data.\n\n"
-                "Follow this process:\n"
-                "1. Review every column in the profile — dtype, null percentage, casing, sample values.\n"
-                "2. For each issue you find, call the appropriate tool to fix it.\n"
-                "3. Work through all columns before calling finish.\n\n"
-                "Rules:\n"
-                "- Always call drop_duplicates and replace_nan_strings at the start.\n"
-                "- Fill nulls in numeric columns with 'mean' or 'median'. Fill nulls in string columns with 'unknown'.\n"
-                "- Strip currency symbols ('$', ',') or units before converting to a numeric dtype.\n"
-                "- Convert columns that look numeric but have dtype 'object' to float or int.\n"
-                "- Rename columns with spaces or special characters to use underscores.\n"
-                "- If a column name contains 'date' or 'dob', call standardize_date on it.\n"
-                "- If a column name contains 'phone', call standardize_phone on it.\n"
-                "- If a column name contains 'email', call validate_email on it.\n"
-                "- If a column name contains 'balance', call flag_negative_balance on it.\n"
-                "- If a string column has mixed_case: true, call standardize_case with 'lower' to normalize it.\n"
-                "- Only call finish when every column has been reviewed and all issues are resolved."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"Here is the profile of the dataset:\n{json.dumps(profile, indent=2)}\n\n"
-                "Go through each column, identify issues, and fix them using the available tools. "
-                "State which issue you are fixing and why before each tool call. "
-                "When all columns are clean, call the finish tool."
-            ),
-        },
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
     ]
 
-    while True:
+    iteration = 0
+    retries = 0
+
+    while iteration < MAX_ITERATIONS:
+        iteration += 1
+        audit(f"--- Iteration {iteration} ---")
+
         response = client.chat.completions.create(
             model=MODEL,
             messages=messages,
@@ -408,12 +451,24 @@ def run_agent(source):
         )
 
         msg = response.choices[0].message
+        finish_reason = response.choices[0].finish_reason
         messages.append(msg)
-        print(f"Agent response:\n{msg.content}\n")
 
-        if response.choices[0].finish_reason == "stop" or not msg.tool_calls:
-            print("Agent finished.")
-            break
+        if msg.content:
+            audit(f"Agent: {msg.content}")
+
+        # Agent stopped without calling finish — retry with a nudge
+        if finish_reason == "stop" or not msg.tool_calls:
+            retries += 1
+            if retries > MAX_RETRIES:
+                audit("Max retries reached. Stopping.")
+                break
+            audit(f"Agent stopped early (retry {retries}/{MAX_RETRIES}). Nudging...")
+            messages.append({
+                "role": "user",
+                "content": "You have not called the finish tool yet. Continue reviewing the remaining columns and call finish when all are clean.",
+            })
+            continue
 
         done = False
         for tool_call in msg.tool_calls:
@@ -423,9 +478,11 @@ def run_agent(source):
             if name == "finish":
                 done = True
                 result_msg = "Cleaning complete."
+                audit("Agent called finish — cleaning complete.")
             else:
-                print(f"Calling tool: {name}({args})")
+                audit(f"Tool call: {name}({args})")
                 df, result_msg = run_tool(df, name, args)
+                audit(f"Tool result: {result_msg}")
 
             messages.append({
                 "role": "tool",
@@ -436,6 +493,10 @@ def run_agent(source):
         if done:
             break
 
+    else:
+        audit(f"Hit max iteration limit ({MAX_ITERATIONS}). Returning current state.")
+
+    audit(f"Agent finished. Final shape: {df.shape}")
     return df
 
 if __name__ == "__main__":
