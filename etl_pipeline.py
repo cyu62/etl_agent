@@ -34,8 +34,11 @@ def extract(filepath):
     return pd.read_csv(filepath)
 
 def transform(data, duck_db_path=None, duck_table=None):
-    for col in data.select_dtypes(include="object").columns:
-        data[col] = data[col].str.lower()
+    # Work on a copy so the caller's DataFrame is never mutated.
+    # Case normalization is left to the agent (per column, guided by the
+    # mixed_case profile flag) — blanket lowercasing destroys name/address
+    # casing and made that flag a permanent no-op.
+    data = data.copy()
     data, _ = drop_duplicates(data)
     data, _ = replace_nan_strings(data)
     data = run_agent(data, duck_db_path=duck_db_path, duck_table=duck_table)
@@ -194,18 +197,6 @@ def drop_column(df, column):
     df = df.drop(columns=column)
     return df, f"Dropped column '{column}'."
 
-def fill_nulls(df, column, strategy):
-    null_count = df[column].isna().sum()
-    if strategy == "mean":
-        df[column] = df[column].fillna(df[column].mean())
-    elif strategy == "median":
-        df[column] = df[column].fillna(df[column].median())
-    elif strategy == "mode":
-        df[column] = df[column].fillna(df[column].mode()[0])
-    else:
-        df[column] = df[column].fillna(strategy)
-    return df, f"Filled {null_count} null(s) in '{column}' using strategy '{strategy}'."
-
 def convert_dtype(df, column, dtype):
     before = str(df[column].dtype)
     df[column] = df[column].astype(dtype)
@@ -308,11 +299,14 @@ def replace_nan_strings(df):
     )
 
 def flag_negative_balance(df, column):
+    # Name the flag after the source column so flagging a second numeric
+    # column doesn't overwrite the first flag.
+    flag_col = f"{column}_negative_flag"
     flagged = df[column].apply(lambda x: pd.notna(x) and x < 0).sum()
-    df["balance_flag"] = df[column].apply(
-        lambda x: "negative_balance" if pd.notna(x) and x < 0 else ""
+    df[flag_col] = df[column].apply(
+        lambda x: "negative" if pd.notna(x) and x < 0 else ""
     )
-    return df, f"Flagged {flagged} negative value(s) in '{column}' — added 'balance_flag' column."
+    return df, f"Flagged {flagged} negative value(s) in '{column}' — added '{flag_col}' column."
 
 def trim_whitespace(df, column):
     before = df[column].astype(str).copy()
@@ -378,7 +372,7 @@ tools = [
                 "type": "object",
                 "properties": {
                     "column": {"type": "string", "description": "Column name"},
-                    "dtype": {"type": "string", "description": "Target type: float, int, str"},
+                    "dtype": {"type": "string", "description": "Target type: float, int, str, or Int64 (pandas nullable integer — use Int64 instead of int when the column contains nulls, since plain int cannot hold missing values; string columns must be converted to float before Int64)"},
                 },
                 "required": ["column", "dtype"],
             },
@@ -491,7 +485,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "flag_negative_balance",
-            "description": "Add a balance_flag column marking rows where the balance column is negative",
+            "description": "Add a '<column>_negative_flag' column marking rows where the given numeric column is negative",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -527,31 +521,34 @@ tools = [
 
 # --- Tool dispatcher ---
 def run_tool(df, name, tool_input):
+    # Dispatch on a copy: the tool functions assign df[column] in place, so
+    # without it the except path could hand back a partially-modified frame.
+    working = df.copy()
     try:
         if name == "drop_column":
-            return drop_column(df, tool_input["column"])
+            return drop_column(working, tool_input["column"])
         elif name == "convert_dtype":
-            return convert_dtype(df, tool_input["column"], tool_input["dtype"])
+            return convert_dtype(working, tool_input["column"], tool_input["dtype"])
         elif name == "rename_column":
-            return rename_column(df, tool_input["old_name"], tool_input["new_name"])
+            return rename_column(working, tool_input["old_name"], tool_input["new_name"])
         elif name == "strip_characters":
-            return strip_characters(df, tool_input["column"], tool_input["chars"])
+            return strip_characters(working, tool_input["column"], tool_input["chars"])
         elif name == "standardize_case":
-            return standardize_case(df, tool_input["column"], tool_input["case"])
+            return standardize_case(working, tool_input["column"], tool_input["case"])
         elif name == "drop_duplicates":
-            return drop_duplicates(df)
+            return drop_duplicates(working)
         elif name == "standardize_date":
-            return standardize_date(df, tool_input["column"])
+            return standardize_date(working, tool_input["column"])
         elif name == "standardize_phone":
-            return standardize_phone(df, tool_input["column"])
+            return standardize_phone(working, tool_input["column"])
         elif name == "validate_email":
-            return validate_email(df, tool_input["column"])
+            return validate_email(working, tool_input["column"])
         elif name == "replace_nan_strings":
-            return replace_nan_strings(df)
+            return replace_nan_strings(working)
         elif name == "flag_negative_balance":
-            return flag_negative_balance(df, tool_input["column"])
+            return flag_negative_balance(working, tool_input["column"])
         elif name == "trim_whitespace":
-            return trim_whitespace(df, tool_input["column"])
+            return trim_whitespace(working, tool_input["column"])
         else:
             return df, f"Unknown tool: {name}"
     except Exception as e:
@@ -597,7 +594,9 @@ def run_agent(source, duck_db_path=None, duck_table=None):
         "- If a column name contains 'phone', call standardize_phone on it.\n"
         "- If a column name contains 'email', call validate_email on it.\n"
         "- If a numeric column has has_negatives: true in its profile, call flag_negative_balance on it.\n"
-        "- If a string column has mixed_case: true, call standardize_case with 'lower' to normalize it.\n"
+        "- If a string column has mixed_case: true AND it holds categorical codes or labels "
+        "(low unique_count — e.g. account_type, state, status), call standardize_case with 'lower'. "
+        "Do NOT change the case of names, addresses, emails, or other free-text columns.\n"
         "- If the profile contains a 'target_table_name' key, use it to understand the domain of the data (e.g. 'customers', 'transactions') and apply domain-appropriate cleaning decisions.\n"
         "- If the profile contains a 'target_table_schema' key, use it as a standardization guide for naming and types. "
         "Prefer the column names and dtypes in target_table_schema when deciding how to clean the incoming data. "
@@ -629,6 +628,7 @@ def run_agent(source, duck_db_path=None, duck_table=None):
             model=MODEL,
             messages=messages,
             tools=tools,
+            temperature=0,
         )
 
         msg = response.choices[0].message

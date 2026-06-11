@@ -114,7 +114,15 @@ def test_validate_email():
 def test_flag_negative_balance():
     df = pd.DataFrame({"bal": [-5.0, 10.0, np.nan]})
     df, _ = flag_negative_balance(df, "bal")
-    assert df["balance_flag"].tolist() == ["negative_balance", "", ""]
+    assert df["bal_negative_flag"].tolist() == ["negative", "", ""]
+
+
+def test_flag_negative_balance_two_columns_dont_collide():
+    df = pd.DataFrame({"balance": [-1.0, 2.0], "income": [3.0, -4.0]})
+    df, _ = flag_negative_balance(df, "balance")
+    df, _ = flag_negative_balance(df, "income")
+    assert df["balance_negative_flag"].tolist() == ["negative", ""]
+    assert df["income_negative_flag"].tolist() == ["", "negative"]
 
 
 # --- dispatcher ---
@@ -131,6 +139,23 @@ def test_run_tool_error_is_reported_not_raised():
     out, msg = run_tool(df, "convert_dtype", {"column": "x", "dtype": "int"})
     assert msg.startswith("Error:")
     assert out["x"].tolist() == ["abc"]
+
+
+def test_run_tool_does_not_mutate_input():
+    df = pd.DataFrame({"s": ["  a "]})
+    out, _ = run_tool(df, "trim_whitespace", {"column": "s"})
+    assert df["s"].tolist() == ["  a "]  # caller's frame untouched
+    assert out["s"].tolist() == ["a"]
+
+
+def test_transform_does_not_mutate_caller(monkeypatch):
+    import etl_pipeline
+    monkeypatch.setattr(etl_pipeline, "run_agent", lambda df, **kw: df)
+    raw = pd.DataFrame({"s": ["Keep Case", "Keep Case"]})
+    out = etl_pipeline.transform(raw)
+    assert len(raw) == 2  # caller's frame keeps its duplicate row
+    assert len(out) == 1
+    assert out["s"].tolist() == ["Keep Case"]  # no blanket lowercasing
 
 
 # --- schema enforcement ---
@@ -161,6 +186,46 @@ def test_enforce_schema_refuses_ambiguous_positional_rename():
     out = enforce_schema_columns(df, TARGET)
     # Two unmatched on each side: no guessing — originals kept as extras at the end
     assert list(out.columns) == ["customer_id", "fname", "bal_amt"]
+
+
+# --- agent loop ---
+
+def test_agent_survives_malformed_tool_arguments(monkeypatch):
+    from types import SimpleNamespace
+    import etl_pipeline
+
+    responses = [
+        # First turn: model emits truncated JSON arguments
+        SimpleNamespace(
+            id="call_1",
+            function=SimpleNamespace(name="trim_whitespace", arguments='{"column": '),
+        ),
+        # Second turn: model recovers and finishes
+        SimpleNamespace(id="call_2", function=SimpleNamespace(name="finish", arguments="")),
+    ]
+    seen_messages = []
+
+    def fake_create(model, messages, tools, **kwargs):
+        seen_messages.append(list(messages))
+        tc = responses[len(seen_messages) - 1]
+        msg = SimpleNamespace(content=None, tool_calls=[tc])
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="tool_calls")])
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+    )
+    monkeypatch.setattr(etl_pipeline, "client", fake_client)
+
+    df = pd.DataFrame({"a": [" x "]})
+    out = etl_pipeline.run_agent(df)
+
+    # No crash, the malformed call was not dispatched, and the agent got a
+    # tool-role error message it could react to on the next turn
+    assert out["a"].tolist() == [" x "]
+    error_reply = seen_messages[1][-1]
+    assert error_reply["role"] == "tool"
+    assert error_reply["tool_call_id"] == "call_1"
+    assert "not valid JSON" in error_reply["content"]
 
 
 # --- DuckDB table name validation and load ---
