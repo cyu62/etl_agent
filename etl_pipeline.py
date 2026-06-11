@@ -50,8 +50,19 @@ def load(data, filepath="cleaned_output.csv"):
     data.to_csv(filepath, index=False)
     return filepath
 
+def validate_table_name(table):
+    # Table names are interpolated into SQL (identifiers can't be bound as
+    # parameters), so restrict them to a safe character set.
+    import re
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table or ""):
+        raise ValueError(
+            f"Invalid table name '{table}' — use only letters, digits, and "
+            "underscores, starting with a letter or underscore."
+        )
+
 def load_to_duckdb(df, db_path, table, replace=False):
     import duckdb
+    validate_table_name(table)
     conn = duckdb.connect(db_path)
     try:
         table_exists = conn.execute(
@@ -106,13 +117,21 @@ def enforce_schema_columns(df, target_schema):
             if inc_norm == target_norm:
                 best = inc_col
                 break
-        # Fallback: align by position if counts match and no fuzzy match found
-        if best is None and len(unmatched_target) == len(unmatched_incoming):
-            idx = unmatched_target.index(target_col)
-            best = unmatched_incoming[idx]
         if best:
             rename_map[best] = target_col
             unmatched_incoming.remove(best)
+
+    # After fuzzy matching, a single leftover pair is unambiguous. Anything
+    # more would be renaming by position, which can silently map unrelated
+    # columns onto each other — refuse and report instead.
+    still_unmatched = [c for c in unmatched_target if c not in rename_map.values()]
+    if len(still_unmatched) == 1 and len(unmatched_incoming) == 1:
+        rename_map[unmatched_incoming[0]] = still_unmatched[0]
+    elif still_unmatched:
+        audit(
+            f"Schema enforcement: could not match target column(s) {still_unmatched} "
+            f"to incoming column(s) {unmatched_incoming} — leaving them unchanged."
+        )
 
     if rename_map:
         audit(f"Schema enforcement: renaming columns {rename_map}")
@@ -126,6 +145,7 @@ def enforce_schema_columns(df, target_schema):
     return df
 
 def get_duckdb_schema(db_path, table):
+    validate_table_name(table)
     try:
         import duckdb
         conn = duckdb.connect(db_path)
@@ -142,7 +162,7 @@ def get_duckdb_schema(db_path, table):
     except Exception:
         return None
 
-def get_data_profile(df, target_schema=None):
+def get_data_profile(df, target_schema=None, target_table=None):
     def col_profile(series):
         profile = {
             "dtype": str(series.dtype),
@@ -166,6 +186,8 @@ def get_data_profile(df, target_schema=None):
     }
     if target_schema:
         profile["target_table_schema"] = target_schema
+    if target_table:
+        profile["target_table_name"] = target_table
     return profile
 
 def drop_column(df, column):
@@ -272,10 +294,18 @@ def validate_email(df, column):
     return df, f"Validated emails in '{column}': {valid} valid, {invalid} invalid (cleared)."
 
 def replace_nan_strings(df):
-    before = (df == "nan").sum().sum() + (df == "NaN").sum().sum()
-    df = df.replace("nan", "", regex=False)
-    df = df.replace("NaN", "", regex=False)
-    return df, f"Replaced {before} literal 'nan'/'NaN' string(s) with empty string."
+    # Case-insensitive match of common null-placeholder strings, ignoring
+    # surrounding whitespace. Real NaN values are left untouched.
+    pattern = r"(?i)^\s*(nan|n/a|none|null|unknown)\s*$"
+    str_cols = df.select_dtypes(include="object").columns
+    before = int(
+        df[str_cols].apply(lambda s: s.str.match(pattern, na=False)).sum().sum()
+    )
+    df = df.replace(pattern, "", regex=True)
+    return df, (
+        f"Replaced {before} placeholder string(s) "
+        "('nan', 'N/A', 'none', 'null', 'unknown') with empty string."
+    )
 
 def flag_negative_balance(df, column):
     flagged = df[column].apply(lambda x: pd.notna(x) and x < 0).sum()
@@ -289,6 +319,38 @@ def trim_whitespace(df, column):
     df[column] = df[column].astype(str).str.strip()
     changed = (before != df[column].astype(str)).sum()
     return df, f"Trimmed whitespace in '{column}'; {changed} value(s) changed."
+
+target_table_schema = {
+    "customers": {
+        "customer_id": "INT",
+        "first_name": "VARCHAR",
+        "last_name": "VARCHAR",
+        "dob": "DATE",
+        "email": "VARCHAR",
+        "phone": "VARCHAR",
+        "address": "VARCHAR",
+        "city": "VARCHAR",
+        "state": "VARCHAR",
+        "zip": "VARCHAR",
+        "account_type": "VARCHAR",
+        "join_date": "DATE",
+        "balance": "FLOAT",
+        "annual_income": "FLOAT",
+        "credit_score": "INT"
+    },
+    "transactions": {
+        "transaction_id": "VARCHAR",
+        "customer_id": "INT",
+        "transaction_date": "DATE",
+        "amount": "FLOAT",
+        "transaction_type": "VARCHAR",
+        "payment_type": "VARCHAR",
+        "merchant_name": "VARCHAR",
+        "merchant_category": "VARCHAR",
+        "status": "VARCHAR"
+    }
+}
+
 
 
 # --- Tool definitions (OpenAI format for Ollama) ---
@@ -421,7 +483,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "replace_nan_strings",
-            "description": "Replace any literal 'nan' or 'NaN' strings across all columns with empty string",
+            "description": "Replace null-placeholder strings ('nan', 'N/A', 'none', 'null', 'unknown', any casing) across all columns with empty string",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -510,9 +572,9 @@ def run_agent(source, duck_db_path=None, duck_table=None):
     if duck_db_path and duck_table:
         target_schema = get_duckdb_schema(duck_db_path, duck_table)
         if target_schema:
-            audit(f"Target DuckDB table '{duck_table}' exists — schema loaded for agent reconciliation.")
+            audit(f"Target DuckDB table '{duck_table}' exists — schema passed to agent as style guide.")
 
-    profile = get_data_profile(df, target_schema=target_schema)
+    profile = get_data_profile(df, target_schema=target_schema, target_table=duck_table)
     audit(f"Starting agent. Dataset shape: {df.shape}")
 
     system_prompt = (
@@ -536,11 +598,11 @@ def run_agent(source, duck_db_path=None, duck_table=None):
         "- If a column name contains 'email', call validate_email on it.\n"
         "- If a numeric column has has_negatives: true in its profile, call flag_negative_balance on it.\n"
         "- If a string column has mixed_case: true, call standardize_case with 'lower' to normalize it.\n"
-        "- If the profile contains a 'target_table_schema' key, it means the data will be appended to an existing table. "
-        "You MUST ensure the incoming columns match the target schema exactly before calling finish. "
-        "For each column in target_table_schema: if the name is missing from the incoming data, check if a differently-named column contains the same data and rename it. "
-        "If a column's dtype does not match, call convert_dtype to align it. "
-        "Do not finish until every column in the incoming data matches a column in the target schema by name and type.\n"
+        "- If the profile contains a 'target_table_name' key, use it to understand the domain of the data (e.g. 'customers', 'transactions') and apply domain-appropriate cleaning decisions.\n"
+        "- If the profile contains a 'target_table_schema' key, use it as a standardization guide for naming and types. "
+        "Prefer the column names and dtypes in target_table_schema when deciding how to clean the incoming data. "
+        "For example, if the target has 'customer_id' as INTEGER and the incoming column is named 'cust_id' with dtype object, rename it and convert its dtype to match. "
+        "Apply this guidance to every column — not just ones that are obviously mismatched.\n"
         "- Only call finish when every column has been reviewed and all issues are resolved."
     )
 
@@ -592,7 +654,17 @@ def run_agent(source, duck_db_path=None, duck_table=None):
         done = False
         for tool_call in msg.tool_calls:
             name = tool_call.function.name
-            args = json.loads(tool_call.function.arguments)
+            try:
+                # Some models emit "" instead of "{}" for no-argument tools
+                args = json.loads(tool_call.function.arguments or "{}")
+            except json.JSONDecodeError as e:
+                audit(f"Malformed arguments for {name}: {tool_call.function.arguments!r} ({e})")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": f"Error: tool arguments were not valid JSON ({e}). Call {name} again with valid JSON arguments.",
+                })
+                continue
 
             if name == "finish":
                 done = True

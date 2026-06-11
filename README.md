@@ -8,7 +8,7 @@ An AI-powered ETL (Extract, Transform, Load) pipeline that uses a local LLM via 
 2. **Transform** — runs deterministic pre-cleaning, then hands the data profile to an AI agent (Ollama) which calls cleaning tools to fix issues it finds
 3. **Load** — saves the cleaned DataFrame to a new CSV file
 
-The AI agent never sees the raw data — it only sees a profile (column names, data types, null percentages, sample values). It then decides which tools to call based on what it finds.
+The AI agent does not receive the full dataset — it sees a profile (column names, data types, null percentages) that includes **up to 5 sample values per column**. Those samples are real rows, so the model does see a small slice of raw data (names, emails, etc.). With the default local Ollama model nothing leaves your machine, but keep this in mind before pointing the pipeline at a cloud API. The agent decides which tools to call based on what it finds in the profile.
 
 ## Requirements
 
